@@ -142,34 +142,47 @@ char bf_instr_to_oct(char c) {
 	return outc;
 }
 
+/* Gets the total number of instructions that need to be written to a ROM file. */
+size_t bf_get_rom_instruction_count(bf_file f) {
+	return f.len + 8;
+}
+
+/*
+ * Gets the nth instruction to be written to a ROM file. For proper CPU operation, there are some
+ * instructions before and after the instructions contained in the file.
+ */
+char bf_get_nth_rom_instruction(bf_file f, size_t n) {
+	if (n < 2) {
+		/* '>' and '<' instructions because the CPU may not behave perfectly initially */
+		return "><"[n];
+	} else if (n < 2 + f.len) {
+		return f.code[n - 2];
+	} else {
+		/* Halt the CPU at the end */
+		return "[-]+[]"[n - f.len - 2];
+	}
+}
+
 /* Generate the contents of a logisim-evolution ROM. The outmut must be freed later. */
 rom_file generate_rom(bf_file f) {
 	const char *header = "v3.0 hex words plain\n";
-
 	size_t header_length = strlen(header);
-	size_t out_length = header_length + f.len * 2 + 6; /* 6 - extra needed instructions */
+
+	size_t icount = bf_get_rom_instruction_count(f);
+	size_t out_length = header_length + icount * 2;
 	char *out = malloc(out_length * sizeof(char));
 
 	char *tmp = out;
 	memcpy(tmp, header, header_length * sizeof(char));
 	tmp += header_length;
 
-	/* Add a '>' and a '<' instruction, as the CPU may not behave perfectly in the first
-	 * instruction
-	 */
-	tmp[0] = '0';
-	tmp[1] = ' ';
-	tmp[2] = '1';
-	tmp[3] = ' ';
-	tmp += 4;
-
 	size_t count = 0;
-	for (size_t i = 0; i < f.len; ++i) {
-		char fst = bf_instr_to_oct(f.code[i]);
+	for (size_t i = 0; i < icount; ++i) {
+		char fst = bf_instr_to_oct(bf_get_nth_rom_instruction(f, i));
 		if (fst != '\0') {
 			/* Split lines every 16 instructions */
 			char snd;
-			if ((count + 3) % 16 == 0)
+			if ((count + 1) % 16 == 0)
 				snd = '\n';
 			else
 				snd = ' ';
@@ -180,10 +193,6 @@ rom_file generate_rom(bf_file f) {
 			++count;
 		}
 	}
-
-	/* Halt the CPU by asking for input (as of now, not implemented in hardware) */
-	tmp[0] = '5';
-	tmp[1] = '\0';
 
 	rom_file file;
 	file.len = out_length - 1; /* Remove '\0' */
@@ -229,10 +238,23 @@ void bf_char(bf_state* state, char c) {
 			(state->mem[state->memp])--;
 			break;
 		case '.':
-			putchar(state->mem[state->memp]);
+			/*
+			 * Replace tabs by spaces to mimic the CPU's behavior, needed for logisim's
+			 * terminals.
+			 */
+			if (state->mem[state->memp] == '\t') {
+				putchar(' ');
+			} else {
+				putchar(state->mem[state->memp]);
+			}
 			break;
 		case ',':
-			state->mem[state->memp] = getchar();
+			{
+				int c = getchar();
+				if (c != EOF) {
+					state->mem[state->memp] = c;
+				}
+			}
 			break;
 		default:
 			break;

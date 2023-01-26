@@ -38,6 +38,11 @@ choose "Load Image...". Select the binary file the toolchain created.
 
 ![Load ROM](img/LoadROM.png)
 
+The program's input can be set (with the hand tool) in the keyboard field below the terminal
+output:
+
+![User Input](img/UserInput.png)
+
 Start the simulation by going to `Simulate -> Auto-Tick Enabled` or pressing `Ctrl+K`. The CPU's
 frequency can also be adjusted on the `Simulate` menu.
 
@@ -54,15 +59,15 @@ $ ./toolchain sim [input file]
 
 The simulator tries to emulate the CPU. Though, there are some differences to be noted:
 
-- When the end of the program is reached, the simulator stops running. Meanwhile, the CPU asks for
-  user input (not implemented yet), therefore halting the system.
+- When the end of the program is reached, the simulator simply stops running. Meanwhile, the CPU
+  needs to modify the cell it is working on, in order to stop program execution. The memory dumps
+  at the end may be, therefore, different.
 
 - The simulator segfaults when reading / writing outside of the memory array. On the other hand,
   the CPU will likely read / write from the wrong address.
 
 ## Future goals
 
-- Support for user input
 - Documentation
 - `[-]` optimization (set cell to zero)
 - Error detection
