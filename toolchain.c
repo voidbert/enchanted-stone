@@ -9,6 +9,7 @@
 	#define DIRECTORY_SEPARATOR '/'
 #endif
 
+#define READ_FILE_BUFFER_SIZE 0x400
 #define STACK_SIZE  0x100
 #define MEMORY_SIZE 0x10000
 typedef uint8_t bf_int;
@@ -36,76 +37,65 @@ typedef struct {
 typedef struct {
 	size_t len;
 	char *code;
-} rom_file;
+} bf_rom_file;
 
-/* Read all the contents of a brainfuck file.
+typedef struct {
+	int valid;
+
+	const char * fp;
+	int fp_set;
+} bf_sim_args;
+
+typedef struct {
+	int valid;
+
+	const char * fp;
+	int fp_set;
+} bf_bin_args;
+
+/*
+ * Read all the contents of a brainfuck file. Use an empty file path to read from stdin.
  * A file with a NULL code pointer is returned on failure.
  */
-bf_file read_file(const char *fp) {
+bf_file bf_read_file(const char *fp) {
 	bf_file ret;
 	ret.len = 0;
 	ret.code = NULL;
 
-	FILE *f = fopen(fp, "r");
-	if (f == NULL) {
-		return ret;
-	}
-
-	/* Get the length of the file to perform a single allocation */
-	if (fseek(f, 0, SEEK_END)) {
-		fclose(f);
-		return ret;
-	}
-	long len = ftell(f);
-	if (len == -1) {
-		fclose(f);
-		return ret;
-	}
-	rewind(f);
-
-	char *data = (char *) malloc(len * sizeof(char));
-	if (!fread(data, 1, len, f)) {
-		fclose(f);
-		return ret;
-	}
-
-	if (fclose(f) != 0) {
-		fclose(f);
-		return ret;
-	}
-
-	ret.len  = len;
-	ret.code = data;
-	return ret;
-}
-
-/* Generate the path of the output ROM file if it was not specified. The output must be freed. */
-char *auto_rom_name(const char *fp) {
-	size_t len = strlen(fp);
-
-	/* If found, replace the file extension by the .bin */
-	size_t dot_index = 0;
-	for (size_t i = len - 1; i >= 0; i--) {
-		if (fp[i] == DIRECTORY_SEPARATOR) {
-			break;
-		} else if (fp[i] == '.') {
-			dot_index = i;
-			break;
+	FILE* f;
+	if (strlen(fp) == 0) {
+		f = stdin;
+	} else {
+		f = fopen(fp, "r");
+		if (f == NULL) {
+			return ret;
 		}
 	}
 
-	char *out;
-	if (dot_index == 0) {
-		dot_index = len;
-		out = malloc((len + 4 + 1) * sizeof(char));
+	size_t read_bytes;
+	char *buffer = malloc(READ_FILE_BUFFER_SIZE);
+	size_t offset_count = 0;
+	while ((read_bytes = fread(buffer + offset_count * READ_FILE_BUFFER_SIZE, 1,
+			READ_FILE_BUFFER_SIZE, f)) == READ_FILE_BUFFER_SIZE) {
+
+		offset_count++;
+		buffer = realloc(buffer, (offset_count + 1) * READ_FILE_BUFFER_SIZE);
+	}
+	if (!feof(f)) {
+		fclose(f);
+		return ret;
 	} else {
-		out = malloc((dot_index + 4 + 1) * sizeof(char));
+		size_t len = (offset_count * READ_FILE_BUFFER_SIZE) + read_bytes;
+		buffer[len] = '\0';
+		ret.len = len;
 	}
 
-	memcpy(out, fp, dot_index);
-	memcpy(out + dot_index, ".bin", 5);
+	if (f != stdin && fclose(f) != 0) {
+		return ret;
+	}
 
-	return out;
+	ret.code = buffer;
+	return ret;
 }
 
 /* Convert a brainfuck instruction to an octal number. '\0' is returned for invalid instructions */
@@ -164,16 +154,16 @@ char bf_get_nth_rom_instruction(bf_file f, size_t n) {
 }
 
 /* Generate the contents of a logisim-evolution ROM. The outmut must be freed later. */
-rom_file generate_rom(bf_file f) {
+bf_rom_file bf_generate_rom(bf_file f) {
 	const char *header = "v3.0 hex words plain\n";
 	size_t header_length = strlen(header);
 
 	size_t icount = bf_get_rom_instruction_count(f);
 	size_t out_length = header_length + icount * 2;
-	char *out = malloc(out_length * sizeof(char));
+	char *out = malloc(out_length);
 
 	char *tmp = out;
-	memcpy(tmp, header, header_length * sizeof(char));
+	memcpy(tmp, header, header_length);
 	tmp += header_length;
 
 	size_t count = 0;
@@ -194,7 +184,7 @@ rom_file generate_rom(bf_file f) {
 		}
 	}
 
-	rom_file file;
+	bf_rom_file file;
 	file.len = out_length - 1; /* Remove '\0' */
 	file.code = out;
 	return file;
@@ -307,9 +297,73 @@ void bf_finalize(bf_state *state) {
 	free(state->mem);
 }
 
-void print_usage(void) {
+void bf_print_usage(void) {
 	fputs("Program usage: ./toolchain bin <file> - Make logisim-evolution ROM\n", stderr);
-	fputs("               ./toolchain sim <file>    - Simulate Brainfuck program\n", stderr);
+	fputs("               ./toolchain sim <file> - Simulate Brainfuck program\n", stderr);
+	fputs("\n"                                                                  , stderr);
+	fputs("If the file is omitted, stdin is used.\n"                            , stderr);
+}
+
+/* Parses the arguments after "bin" */
+bf_bin_args bf_parse_bin_args(int argc, char **argv) {
+	bf_bin_args ret;
+	ret.valid = 0;
+	ret.fp = NULL;
+	ret.fp_set = 0;
+
+	for (int i = 0; i < argc; ++i) {
+		if (argv[i][0] == '-') {
+			fprintf(stderr, "Unknown option for bin: \"%s\"\n", argv[i]);
+			return ret;
+		} else if (argv[i][0] != '\0') {
+			if (ret.fp_set) {
+				fprintf(stderr, "Only one input file allowed: error on \"%s\"\n", argv[i]);
+				return ret;
+			} else {
+				ret.fp = argv[i];
+				ret.fp_set = 1;
+			}
+		}
+	}
+
+	if (!ret.fp_set) {
+		ret.fp_set = 1;
+		ret.fp = ""; /* Use stdin */
+	}
+
+	ret.valid = 1;
+	return ret;
+}
+
+/* Parses the arguments after "sim" */
+bf_sim_args bf_parse_sim_args(int argc, char **argv) {
+	bf_sim_args ret;
+	ret.valid = 0;
+	ret.fp = NULL;
+	ret.fp_set = 0;
+
+	for (int i = 0; i < argc; ++i) {
+		if (argv[i][0] == '-') {
+			fprintf(stderr, "Unknown option for sim: \"%s\"\n", argv[i]);
+			return ret;
+		} else if (argv[i][0] != '\0') {
+			if (ret.fp_set) {
+				fprintf(stderr, "Only one input file allowed: error on \"%s\"\n", argv[i]);
+				return ret;
+			} else {
+				ret.fp = argv[i];
+				ret.fp_set = 1;
+			}
+		}
+	}
+
+	if (!ret.fp_set) {
+		ret.fp_set = 1;
+		ret.fp = ""; /* Use stdin */
+	}
+
+	ret.valid = 1;
+	return ret;
 }
 
 int main(int argc, char **argv) {
@@ -318,24 +372,33 @@ int main(int argc, char **argv) {
 	argc--;
 	argv++;
 
-	if (argc >= 2) {
+	if (argc >= 1) {
 		if (strcmp(argv[0], "bin") == 0) {
 
-			file = read_file(argv[1]);
+			bf_bin_args args = bf_parse_bin_args(argc - 1, argv + 1);
+			if (!args.valid)
+				return 1;
+
+			file = bf_read_file(args.fp);
 			if (file.code == NULL) {
-				fprintf(stderr, "Error opening file: %s\n", argv[1]);
+				fprintf(stderr, "Error opening file: \"%s\"\n", args.fp);
 				return 1;
 			}
 
-			rom_file rom = generate_rom(file);
+			bf_rom_file rom = bf_generate_rom(file);
 			puts(rom.code);
-			free(rom.code);
 
+			free(file.code);
+			free(rom.code);
 		} else if (strcmp(argv[0], "sim") == 0) {
 
-			file = read_file(argv[1]);
+			bf_sim_args args = bf_parse_sim_args(argc - 1, argv + 1);
+			if (!args.valid)
+				return 1;
+
+			file = bf_read_file(args.fp);
 			if (file.code == NULL) {
-				fprintf(stderr, "Error opening file: %s\n", argv[1]);
+				fprintf(stderr, "Error opening file: \"%s\"\n", args.fp);
 				return 1;
 			}
 
@@ -344,14 +407,14 @@ int main(int argc, char **argv) {
 				bf_char(&state, file.code[state.pc]);
 			}
 			bf_finalize(&state);
-			free((void *) file.code);
 
+			free(file.code);
 		} else {
-			print_usage();
+			bf_print_usage();
 			return 1;
 		}
 	} else {
-		print_usage();
+		bf_print_usage();
 		return 1;
 	}
 
