@@ -41,6 +41,7 @@ typedef struct {
 /* Settings for brainfuck simulation */
 typedef struct {
 	uint32_t cell_mask; /* Mask for limiting the cell width */
+	int tabs_to_spaces; /* Convert tabs to spaces for accuraccy */
 } bf_sim_settings;
 
 typedef struct {
@@ -51,6 +52,8 @@ typedef struct {
 
 	uint32_t cell_mask; /* Mask for limiting the cell width */
 	int cm_set;
+
+	int tabs_to_spaces; /* Convert tabs to spaces for accuraccy */
 } bf_sim_args;
 
 typedef struct {
@@ -239,7 +242,7 @@ void bf_char(bf_sim_settings set, bf_state* state, char c) {
 			 * Replace tabs by spaces to mimic the CPU's behavior, needed for logisim's
 			 * terminals.
 			 */
-			if (state->mem[state->memp] == '\t') {
+			if (state->mem[state->memp] == '\t' && set.tabs_to_spaces) {
 				putchar(' ');
 			} else {
 				putchar(state->mem[state->memp]);
@@ -308,8 +311,11 @@ void bf_print_usage(void) {
 	fputs("Program usage: ./toolchain bin <file>           - Make logisim-evolution ROM\n", stderr);
 	fputs("               ./toolchain sim <file> [options] - Simulate Brainfuck program\n", stderr);
 	fputs("\nIf the file is omitted, stdin is used.\n\n"                               , stderr);
+
 	fputs("OPTIONS (for simulation): \n\n"                                             , stderr);
+
 	fputs("-8b, -16b, -32b: set width of the cells (default: 8 bits)\n"                , stderr);
+	fputs("-tts: output spaces instead of tabs for CPU accuracy (default: off)"        , stderr);
 }
 
 /* Parses the arguments after "bin" */
@@ -358,6 +364,7 @@ bf_sim_args bf_parse_sim_args(int argc, char **argv) {
 	ret.fp_set = 0;
 	ret.cell_mask = 0xff;
 	ret.cm_set = 0;
+	ret.tabs_to_spaces = 0;
 
 	for (int i = 0; i < argc; ++i) {
 		if (argv[i][0] == '-') {
@@ -373,6 +380,8 @@ bf_sim_args bf_parse_sim_args(int argc, char **argv) {
 				if (bf_sim_args_set_cm(&ret, 32) != 0) {
 					return ret;
 				}
+			} else if (strcmp(argv[i], "-tts") == 0) {
+				ret.tabs_to_spaces = 1;
 			} else {
 				fprintf(stderr, "Unknown option for sim: \"%s\"\n", argv[i]);
 				return ret;
@@ -430,6 +439,7 @@ int main(int argc, char **argv) {
 
 			bf_sim_settings set;
 			set.cell_mask = args.cell_mask;
+			set.tabs_to_spaces = args.tabs_to_spaces;
 
 			bf_state state = bf_init();
 			while (state.pc < file.len) {
