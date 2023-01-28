@@ -12,7 +12,6 @@
 #define READ_FILE_BUFFER_SIZE 0x400
 #define STACK_SIZE  0x100
 #define MEMORY_SIZE 0x10000
-typedef uint8_t bf_int;
 
 /* CPU / Simulator state */
 typedef struct {
@@ -24,7 +23,7 @@ typedef struct {
 	uint32_t sp_bff; /* Stack pointer when fast forwarding started */
 
 	uint32_t memp; /* Pointer to the memory (controlled by '<' and '>') */
-	bf_int *mem; /* Machine's memory */
+	uint32_t *mem; /* Machine's memory */
 } bf_state;
 
 /* A brainfuck file, with information about its content and length */
@@ -39,11 +38,19 @@ typedef struct {
 	char *code;
 } bf_rom_file;
 
+/* Settings for brainfuck simulation */
+typedef struct {
+	uint32_t cell_mask; /* Mask for limiting the cell width */
+} bf_sim_settings;
+
 typedef struct {
 	int valid;
 
 	const char * fp;
 	int fp_set;
+
+	uint32_t cell_mask; /* Mask for limiting the cell width */
+	int cm_set;
 } bf_sim_args;
 
 typedef struct {
@@ -203,14 +210,14 @@ bf_state bf_init(void) {
 	ret.fast_forwarding = 0;
 
 	ret.memp = 0;
-	ret.mem = (bf_int *) malloc(MEMORY_SIZE * sizeof(bf_int));
-	memset(ret.mem, 0, MEMORY_SIZE * sizeof(bf_int));
+	ret.mem = (uint32_t *)  malloc(MEMORY_SIZE * sizeof(uint32_t));
+	memset(ret.mem, 0, MEMORY_SIZE * sizeof(uint32_t));
 
 	return ret;
 }
 
 /* Execute a single instruction, updating the machine's state */
-void bf_char(bf_state* state, char c) {
+void bf_char(bf_sim_settings set, bf_state* state, char c) {
 	int ctn = 1; /* 1 for going to the following instruction automatically */
 
 	if (!state->fast_forwarding) {
@@ -222,10 +229,10 @@ void bf_char(bf_state* state, char c) {
 			state->memp--;
 			break;
 		case '+':
-			(state->mem[state->memp])++;
+			state->mem[state->memp] = (state->mem[state->memp] + 1) & set.cell_mask;
 			break;
 		case '-':
-			(state->mem[state->memp])--;
+			state->mem[state->memp] = (state->mem[state->memp] - 1) & set.cell_mask;
 			break;
 		case '.':
 			/*
@@ -298,17 +305,18 @@ void bf_finalize(bf_state *state) {
 }
 
 void bf_print_usage(void) {
-	fputs("Program usage: ./toolchain bin <file> - Make logisim-evolution ROM\n", stderr);
-	fputs("               ./toolchain sim <file> - Simulate Brainfuck program\n", stderr);
-	fputs("\n"                                                                  , stderr);
-	fputs("If the file is omitted, stdin is used.\n"                            , stderr);
+	fputs("Program usage: ./toolchain bin <file>           - Make logisim-evolution ROM\n", stderr);
+	fputs("               ./toolchain sim <file> [options] - Simulate Brainfuck program\n", stderr);
+	fputs("\nIf the file is omitted, stdin is used.\n\n"                               , stderr);
+	fputs("OPTIONS (for simulation): \n\n"                                             , stderr);
+	fputs("-8b, -16b, -32b: set width of the cells (default: 8 bits)\n"                , stderr);
 }
 
 /* Parses the arguments after "bin" */
 bf_bin_args bf_parse_bin_args(int argc, char **argv) {
 	bf_bin_args ret;
 	ret.valid = 0;
-	ret.fp = NULL;
+	ret.fp = ""; /* Use stdin by default */
 	ret.fp_set = 0;
 
 	for (int i = 0; i < argc; ++i) {
@@ -326,26 +334,49 @@ bf_bin_args bf_parse_bin_args(int argc, char **argv) {
 		}
 	}
 
-	if (!ret.fp_set) {
-		ret.fp_set = 1;
-		ret.fp = ""; /* Use stdin */
-	}
-
 	ret.valid = 1;
 	return ret;
+}
+
+/* Set the cell width while parsing the simulation arguments. 0 is returned on success. */
+int bf_sim_args_set_cm(bf_sim_args *args, uint32_t width) {
+	if (args->cm_set) {
+		fprintf(stderr, "Cannot specify multiple cell widths: error on \"-%ib\"\n", width);
+		return 1;
+	} else {
+		args->cm_set = 1;
+		args->cell_mask = (uint32_t) ((1ULL << (uint64_t) width) - 1);
+		return 0;
+	}
 }
 
 /* Parses the arguments after "sim" */
 bf_sim_args bf_parse_sim_args(int argc, char **argv) {
 	bf_sim_args ret;
 	ret.valid = 0;
-	ret.fp = NULL;
+	ret.fp = ""; /* Use stdin by default */
 	ret.fp_set = 0;
+	ret.cell_mask = 0xff;
+	ret.cm_set = 0;
 
 	for (int i = 0; i < argc; ++i) {
 		if (argv[i][0] == '-') {
-			fprintf(stderr, "Unknown option for sim: \"%s\"\n", argv[i]);
-			return ret;
+			if (strcmp(argv[i], "-8b") == 0) {
+				if (bf_sim_args_set_cm(&ret, 8) != 0) {
+					return ret;
+				}
+			} else if (strcmp(argv[i], "-16b") == 0) {
+				if (bf_sim_args_set_cm(&ret, 16) != 0) {
+					return ret;
+				}
+			} else if (strcmp(argv[i], "-32b") == 0) {
+				if (bf_sim_args_set_cm(&ret, 32) != 0) {
+					return ret;
+				}
+			} else {
+				fprintf(stderr, "Unknown option for sim: \"%s\"\n", argv[i]);
+				return ret;
+			}
 		} else if (argv[i][0] != '\0') {
 			if (ret.fp_set) {
 				fprintf(stderr, "Only one input file allowed: error on \"%s\"\n", argv[i]);
@@ -355,11 +386,6 @@ bf_sim_args bf_parse_sim_args(int argc, char **argv) {
 				ret.fp_set = 1;
 			}
 		}
-	}
-
-	if (!ret.fp_set) {
-		ret.fp_set = 1;
-		ret.fp = ""; /* Use stdin */
 	}
 
 	ret.valid = 1;
@@ -402,9 +428,12 @@ int main(int argc, char **argv) {
 				return 1;
 			}
 
+			bf_sim_settings set;
+			set.cell_mask = args.cell_mask;
+
 			bf_state state = bf_init();
 			while (state.pc < file.len) {
-				bf_char(&state, file.code[state.pc]);
+				bf_char(set, &state, file.code[state.pc]);
 			}
 			bf_finalize(&state);
 
